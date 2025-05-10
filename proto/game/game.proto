@@ -1,0 +1,236 @@
+syntax = "proto3";
+
+package game;
+
+option go_package = "github.com/annelo/go-grpc-server/pkg/protocol/game";
+
+// Сервис игрового мира
+service WorldService {
+  // Вход в игру и создание сессии
+  rpc JoinGame(JoinRequest) returns (JoinResponse);
+  
+  // Двунаправленный поток для обмена игровыми событиями
+  rpc GameStream(stream ClientMessage) returns (stream ServerMessage);
+  
+  // Запрос чанков мира
+  rpc GetChunks(ChunkRequest) returns (stream Chunk);
+  
+  // Запрос генерации новых чанков
+  rpc GenerateChunks(GenerateRequest) returns (GenerateResponse);
+}
+
+// Запрос на присоединение к игре
+message JoinRequest {
+  string player_name = 1;
+}
+
+// Ответ на запрос присоединения
+message JoinResponse {
+  string player_id = 1;
+  Position spawn_position = 2;
+  bool success = 3;
+  string error_message = 4;
+}
+
+// Запрос на получение чанков
+message ChunkRequest {
+  Position player_position = 1;
+  int32 radius = 2;  // Радиус запрашиваемых чанков
+  string player_id = 3;
+}
+
+// Запрос на генерацию чанков
+message GenerateRequest {
+  repeated ChunkPosition positions = 1;
+  string player_id = 2;
+}
+
+// Ответ на генерацию чанков
+message GenerateResponse {
+  bool success = 1;
+  string error_message = 2;
+}
+
+// Сообщение от клиента к серверу
+message ClientMessage {
+  string player_id = 1;
+  oneof payload {
+    PlayerMovement movement = 2;
+    BlockAction block_action = 3;
+    ChatMessage chat = 4;
+    Ping ping = 5;
+  }
+}
+
+// Сообщение от сервера к клиенту
+message ServerMessage {
+  oneof payload {
+    WorldEvent world_event = 1;
+    PlayerUpdate player_update = 2;
+    ChunkUpdate chunk_update = 3;
+    ChatBroadcast chat_broadcast = 4;
+    Pong pong = 5;
+  }
+}
+
+// Движение игрока
+message PlayerMovement {
+  Position new_position = 1;
+  float direction = 2;  // Направление в радианах
+  bool is_running = 3;
+}
+
+// Действие с блоком
+message BlockAction {
+  enum ActionType {
+    PLACE = 0;
+    DESTROY = 1;
+    INTERACT = 2;
+  }
+  ActionType action = 1;
+  Position position = 2;
+  int32 block_type = 3;  // При размещении
+}
+
+// Сообщение чата
+message ChatMessage {
+  string content = 1;
+  bool is_global = 2;  // Глобальный или локальный чат
+  string target_player_id = 3;  // Для личных сообщений
+}
+
+// Игрок и его состояние
+message Player {
+  string id = 1;
+  string name = 2;
+  Position position = 3;
+  int32 health = 4;
+  int32 current_selected_item = 5;
+}
+
+// Позиция в мире
+message Position {
+  float x = 1;
+  float y = 2;
+  int32 z = 3;  // Уровень/высота
+}
+
+// Идентификатор чанка
+message ChunkPosition {
+  int32 x = 1;
+  int32 y = 2;
+}
+
+// Чанк мира
+message Chunk {
+  ChunkPosition position = 1;
+  repeated Block blocks = 2;
+  repeated Entity entities = 3;
+}
+
+// Блок в мире
+message Block {
+  int32 x = 1;  // Локальная позиция внутри чанка
+  int32 y = 2;
+  int32 type = 3;
+  map<string, string> properties = 4;  // Дополнительные свойства
+}
+
+// Сущность в мире
+message Entity {
+  string id = 1;
+  int32 type = 2;
+  Position position = 3;
+  map<string, string> properties = 4;
+}
+
+// Мировое событие
+message WorldEvent {
+  enum EventType {
+    BLOCK_PLACED = 0;
+    BLOCK_DESTROYED = 1;
+    ENTITY_SPAWNED = 2;
+    ENTITY_DESTROYED = 3;
+    WEATHER_CHANGED = 4;
+    TIME_CHANGED = 5;
+  }
+  EventType type = 1;
+  Position position = 2;
+  string player_id = 3;
+  oneof payload {
+    Block block = 4;
+    Entity entity = 5;
+    Weather weather = 6;
+    TimeInfo time_info = 7;
+  }
+}
+
+// Обновление игрока
+message PlayerUpdate {
+  string player_id = 1;
+  Position position = 2;
+  int32 health = 3;
+  bool is_connected = 4;
+  int32 current_selected_item = 5;
+}
+
+// Обновление чанка
+message ChunkUpdate {
+  ChunkPosition position = 1;
+  repeated BlockUpdate block_updates = 2;
+  repeated EntityUpdate entity_updates = 3;
+}
+
+// Обновление блока
+message BlockUpdate {
+  int32 x = 1;
+  int32 y = 2;
+  int32 type = 3;
+  map<string, string> properties = 4;
+}
+
+// Обновление сущности
+message EntityUpdate {
+  string id = 1;
+  int32 type = 2;
+  Position position = 3;
+  map<string, string> properties = 4;
+  bool is_removed = 5;
+}
+
+// Погода в мире
+message Weather {
+  enum WeatherType {
+    CLEAR = 0;
+    RAIN = 1;
+    STORM = 2;
+  }
+  WeatherType type = 1;
+  float intensity = 2;  // 0.0 - 1.0
+}
+
+// Информация о времени
+message TimeInfo {
+  int64 day_time = 1;  // Время дня (тиков)
+  int32 day = 2;       // Номер дня
+}
+
+// Широковещательное сообщение чата
+message ChatBroadcast {
+  string player_id = 1;
+  string player_name = 2;
+  string content = 3;
+  bool is_global = 4;
+  string target_player_id = 5;  // Для личных сообщений
+}
+
+// Пинг (для проверки соединения)
+message Ping {
+  int64 timestamp = 1;
+}
+
+// Ответ на пинг
+message Pong {
+  int64 client_timestamp = 1;
+  int64 server_timestamp = 2;
+} 
