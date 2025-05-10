@@ -42,7 +42,10 @@ type ClientState struct {
 	lastUpdate     time.Time
 	isConnected    bool
 	// Позиции других игроков, ключ – playerID
-	otherPlayers  map[string]*game.Position
+	otherPlayers map[string]*game.Position
+	// Информация о погоде и времени
+	weather       *game.Weather
+	timeInfo      *game.TimeInfo
 	client        game.WorldServiceClient
 	stream        game.WorldService_GameStreamClient
 	lastBiomeData struct {
@@ -64,6 +67,8 @@ func newClientState() *ClientState {
 		},
 		lastUpdate:   time.Now(),
 		otherPlayers: make(map[string]*game.Position),
+		weather:      &game.Weather{Type: game.Weather_CLEAR, Intensity: 0.0},
+		timeInfo:     &game.TimeInfo{DayTime: 0, Day: 0},
 	}
 }
 
@@ -374,12 +379,50 @@ func renderWorld(cs *ClientState) {
 	// Получаем размеры терминала
 	width, height := termbox.Size()
 
-	// Верхняя информационная панель
-	infoY := 0
-	playerInfo := fmt.Sprintf("Игрок: %s | HP: %d | X: %.1f | Y: %.1f",
-		cs.playerName, cs.health, cs.position.X, cs.position.Y)
-	drawText(0, infoY, width, playerInfo, termbox.ColorWhite, termbox.ColorDefault)
-	infoY++
+	// Отображаем позицию игрока и статистику вверху экрана
+	infoText := fmt.Sprintf("Игрок: %s | Позиция: [%.1f, %.1f] | Здоровье: %d%%",
+		cs.playerName, cs.position.X, cs.position.Y, cs.health)
+	drawText(0, 0, width, infoText, termbox.ColorWhite, termbox.ColorDefault)
+
+	// --- Отображаем информацию о погоде и времени ---
+	cs.mu.RLock()
+	weatherType := "Ясно"
+	weatherSymbol := ' '
+	weatherColor := termbox.ColorWhite
+	weatherIntensity := 0.0
+
+	if cs.weather != nil {
+		weatherIntensity = float64(cs.weather.Intensity)
+		switch cs.weather.Type {
+		case game.Weather_RAIN:
+			weatherType = "Дождь"
+			weatherSymbol = '/'
+			weatherColor = termbox.ColorBlue
+		case game.Weather_STORM:
+			weatherType = "Гроза"
+			weatherSymbol = '⚡'
+			weatherColor = termbox.ColorYellow
+		default:
+			weatherSymbol = '☀'
+			weatherColor = termbox.ColorYellow
+		}
+	}
+
+	var timeString string
+	if cs.timeInfo != nil {
+		dayTimeTicks := cs.timeInfo.DayTime
+		totalMinutes := (dayTimeTicks * 1440) / 1200 // Преобразуем тики в минуты (день = 1200 тиков = 24 часа)
+		hours := totalMinutes / 60
+		minutes := totalMinutes % 60
+		timeString = fmt.Sprintf("День %d, %02d:%02d", cs.timeInfo.Day, hours, minutes)
+	} else {
+		timeString = "День 0, 00:00"
+	}
+	cs.mu.RUnlock()
+
+	weatherText := fmt.Sprintf("Погода: %s %c (%.1f) | %s",
+		weatherType, weatherSymbol, weatherIntensity, timeString)
+	drawText(0, 1, width, weatherText, weatherColor, termbox.ColorDefault)
 
 	// Если включен режим отладки, показываем дополнительную информацию
 	if *debugMode {
@@ -388,18 +431,16 @@ func renderWorld(cs *ClientState) {
 		debugInfo := fmt.Sprintf("Чанк: [%d, %d] | Блок: [%d, %d] | Биом: H=%.2f M=%.2f T=%.2f",
 			chunkX, chunkY, blockX, blockY,
 			cs.lastBiomeData.height, cs.lastBiomeData.moisture, cs.lastBiomeData.temperature)
-		drawText(0, infoY, width, debugInfo, termbox.ColorYellow, termbox.ColorDefault)
-		infoY++
+		drawText(0, 2, width, debugInfo, termbox.ColorYellow, termbox.ColorDefault)
 	}
 
 	// Граница между инфо-панелью и игровым миром
 	for x := 0; x < width; x++ {
-		termbox.SetCell(x, infoY, '-', termbox.ColorWhite, termbox.ColorDefault)
+		termbox.SetCell(x, 3, '-', termbox.ColorWhite, termbox.ColorDefault)
 	}
-	infoY++
 
 	// Вычисляем границы мира для отображения
-	startY := infoY
+	startY := 4
 	worldHeight := height - startY - 6 // Оставляем место для сообщений внизу
 	worldWidth := width
 
@@ -529,8 +570,40 @@ func processServerMessages(cs *ClientState, stream game.WorldService_GameStreamC
 				eventType = "уничтожение сущности"
 			case game.WorldEvent_WEATHER_CHANGED:
 				eventType = "изменение погоды"
+				if weather, ok := event.Payload.(*game.WorldEvent_Weather); ok && weather.Weather != nil {
+					cs.mu.Lock()
+					cs.weather = weather.Weather
+					cs.mu.Unlock()
+
+					weatherType := "Ясно"
+					switch weather.Weather.Type {
+					case game.Weather_RAIN:
+						weatherType = "Дождь"
+					case game.Weather_STORM:
+						weatherType = "Гроза"
+					}
+					cs.addServerMessage(fmt.Sprintf("Погода изменилась: %s (%.1f)",
+						weatherType, weather.Weather.Intensity))
+				}
 			case game.WorldEvent_TIME_CHANGED:
 				eventType = "изменение времени"
+				if timeInfo, ok := event.Payload.(*game.WorldEvent_TimeInfo); ok && timeInfo.TimeInfo != nil {
+					cs.mu.Lock()
+					cs.timeInfo = timeInfo.TimeInfo
+					cs.mu.Unlock()
+
+					// Вычисляем игровое время в часах:минутах
+					dayTimeTicks := timeInfo.TimeInfo.DayTime
+					totalMinutes := (dayTimeTicks * 1440) / 1200 // Преобразуем тики в минуты (день = 1200 тиков = 24 часа)
+					hours := totalMinutes / 60
+					minutes := totalMinutes % 60
+
+					timeStr := fmt.Sprintf("День %d, %02d:%02d", timeInfo.TimeInfo.Day, hours, minutes)
+					cs.addServerMessage(fmt.Sprintf("Время изменилось: %s", timeStr))
+				}
+			case game.WorldEvent_SERVER_SHUTDOWN:
+				eventType = "сервер завершает работу"
+				cs.addServerMessage("Сервер завершает работу: " + event.Message)
 			}
 
 			if event.Position != nil {

@@ -702,6 +702,9 @@ func (s *WorldService) broadcastToAll(message *game.ServerMessage) {
 
 // Stop сохраняет все данные и закрывает стораджи
 func (s *WorldService) Stop() {
+	// Отключаем всех клиентов
+	s.DisconnectAllClients()
+
 	// Сохраняем все игроки
 	if s.worldStorage != nil {
 		players := s.playerManager.GetAllPlayers()
@@ -718,6 +721,36 @@ func (s *WorldService) Stop() {
 		s.chunkManager.SaveChunksToStorage(context.Background())
 		s.worldStorage.Close()
 	}
+}
+
+// DisconnectAllClients отключает всех подключенных клиентов, отправляя им сообщение о завершении работы сервера
+func (s *WorldService) DisconnectAllClients() {
+	log.Println("Отключение всех клиентов...")
+
+	// Отправляем всем клиентам сообщение о завершении работы сервера
+	disconnectMessage := &game.ServerMessage{
+		Payload: &game.ServerMessage_WorldEvent{
+			WorldEvent: &game.WorldEvent{
+				Type:    game.WorldEvent_SERVER_SHUTDOWN,
+				Message: "Сервер завершает работу",
+			},
+		},
+	}
+
+	// Блокирующая отправка сообщений всем клиентам
+	s.mu.Lock()
+	clientCount := len(s.clientStreams)
+	for _, conn := range s.clientStreams {
+		conn.send(disconnectMessage, true) // блокирующая отправка, важно доставить!
+
+		// Закрываем очередь
+		close(conn.sendQueue)
+	}
+	// Очищаем мапу соединений
+	s.clientStreams = make(map[string]*clientConn)
+	s.mu.Unlock()
+
+	log.Printf("Отключено %d клиентов", clientCount)
 }
 
 // send помещает сообщение в очередь.

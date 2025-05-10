@@ -55,6 +55,7 @@ func runClient(ctx context.Context, id int) {
 		return
 	}
 	playerID := joinResp.PlayerId
+	playerPos := joinResp.SpawnPosition
 
 	// Open stream
 	stream, err := client.GameStream(ctx)
@@ -80,11 +81,14 @@ func runClient(ctx context.Context, id int) {
 			return
 		case <-ticker.C:
 			// случайное движение
-			dx := randSrc.Float32()*2 - 1
-			dy := randSrc.Float32()*2 - 1
-			newPos := &game.Position{X: joinResp.SpawnPosition.X + dx, Y: joinResp.SpawnPosition.Y + dy}
-			move := &game.PlayerMovement{NewPosition: newPos}
-			stream.Send(&game.ClientMessage{PlayerId: playerID, Payload: &game.ClientMessage_Movement{Movement: move}})
+			dx := randSrc.Intn(3) - 1
+			dy := randSrc.Intn(3) - 1
+			for range make([]struct{}, randSrc.Intn(100) + 1) {
+				newPos := &game.Position{X: playerPos.X + float32(dx), Y: playerPos.Y + float32(dy)}
+				move := &game.PlayerMovement{NewPosition: newPos}
+				stream.Send(&game.ClientMessage{PlayerId: playerID, Payload: &game.ClientMessage_Movement{Movement: move}})
+				playerPos = newPos
+			}
 
 			// случайное действие с блоком 10% шанс
 			if randSrc.Intn(10) == 0 {
@@ -94,7 +98,7 @@ func runClient(ctx context.Context, id int) {
 				}
 				blkAction := &game.BlockAction{
 					Action:    actionType,
-					Position:  newPos,
+					Position:  &game.Position{X: playerPos.X, Y: playerPos.Y},
 					BlockType: int32(randSrc.Intn(5) + 1),
 				}
 				stream.Send(&game.ClientMessage{PlayerId: playerID, Payload: &game.ClientMessage_BlockAction{BlockAction: blkAction}})

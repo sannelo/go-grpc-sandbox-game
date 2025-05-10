@@ -79,6 +79,7 @@ const (
 	WorldEvent_ENTITY_DESTROYED WorldEvent_EventType = 3
 	WorldEvent_WEATHER_CHANGED  WorldEvent_EventType = 4
 	WorldEvent_TIME_CHANGED     WorldEvent_EventType = 5
+	WorldEvent_SERVER_SHUTDOWN  WorldEvent_EventType = 6
 )
 
 // Enum value maps for WorldEvent_EventType.
@@ -90,6 +91,7 @@ var (
 		3: "ENTITY_DESTROYED",
 		4: "WEATHER_CHANGED",
 		5: "TIME_CHANGED",
+		6: "SERVER_SHUTDOWN",
 	}
 	WorldEvent_EventType_value = map[string]int32{
 		"BLOCK_PLACED":     0,
@@ -98,6 +100,7 @@ var (
 		"ENTITY_DESTROYED": 3,
 		"WEATHER_CHANGED":  4,
 		"TIME_CHANGED":     5,
+		"SERVER_SHUTDOWN":  6,
 	}
 )
 
@@ -1291,6 +1294,7 @@ type WorldEvent struct {
 	Type     WorldEvent_EventType   `protobuf:"varint,1,opt,name=type,proto3,enum=game.WorldEvent_EventType" json:"type,omitempty"`
 	Position *Position              `protobuf:"bytes,2,opt,name=position,proto3" json:"position,omitempty"`
 	PlayerId string                 `protobuf:"bytes,3,opt,name=player_id,json=playerId,proto3" json:"player_id,omitempty"`
+	Message  string                 `protobuf:"bytes,8,opt,name=message,proto3" json:"message,omitempty"` // Текстовое сообщение для дополнительной информации
 	// Types that are valid to be assigned to Payload:
 	//
 	//	*WorldEvent_Block
@@ -1349,6 +1353,13 @@ func (x *WorldEvent) GetPosition() *Position {
 func (x *WorldEvent) GetPlayerId() string {
 	if x != nil {
 		return x.PlayerId
+	}
+	return ""
+}
+
+func (x *WorldEvent) GetMessage() string {
+	if x != nil {
+		return x.Message
 	}
 	return ""
 }
@@ -2084,23 +2095,25 @@ const file_proto_game_game_proto_rawDesc = "" +
 	"properties\x1a=\n" +
 	"\x0fPropertiesEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
-	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"\xbd\x03\n" +
+	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"\xec\x03\n" +
 	"\n" +
 	"WorldEvent\x12.\n" +
 	"\x04type\x18\x01 \x01(\x0e2\x1a.game.WorldEvent.EventTypeR\x04type\x12*\n" +
 	"\bposition\x18\x02 \x01(\v2\x0e.game.PositionR\bposition\x12\x1b\n" +
-	"\tplayer_id\x18\x03 \x01(\tR\bplayerId\x12#\n" +
+	"\tplayer_id\x18\x03 \x01(\tR\bplayerId\x12\x18\n" +
+	"\amessage\x18\b \x01(\tR\amessage\x12#\n" +
 	"\x05block\x18\x04 \x01(\v2\v.game.BlockH\x00R\x05block\x12&\n" +
 	"\x06entity\x18\x05 \x01(\v2\f.game.EntityH\x00R\x06entity\x12)\n" +
 	"\aweather\x18\x06 \x01(\v2\r.game.WeatherH\x00R\aweather\x12-\n" +
-	"\ttime_info\x18\a \x01(\v2\x0e.game.TimeInfoH\x00R\btimeInfo\"\x83\x01\n" +
+	"\ttime_info\x18\a \x01(\v2\x0e.game.TimeInfoH\x00R\btimeInfo\"\x98\x01\n" +
 	"\tEventType\x12\x10\n" +
 	"\fBLOCK_PLACED\x10\x00\x12\x13\n" +
 	"\x0fBLOCK_DESTROYED\x10\x01\x12\x12\n" +
 	"\x0eENTITY_SPAWNED\x10\x02\x12\x14\n" +
 	"\x10ENTITY_DESTROYED\x10\x03\x12\x13\n" +
 	"\x0fWEATHER_CHANGED\x10\x04\x12\x10\n" +
-	"\fTIME_CHANGED\x10\x05B\t\n" +
+	"\fTIME_CHANGED\x10\x05\x12\x13\n" +
+	"\x0fSERVER_SHUTDOWN\x10\x06B\t\n" +
 	"\apayload\"\xc6\x01\n" +
 	"\fPlayerUpdate\x12\x1b\n" +
 	"\tplayer_id\x18\x01 \x01(\tR\bplayerId\x12*\n" +

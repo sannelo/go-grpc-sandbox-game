@@ -153,10 +153,12 @@ message WorldEvent {
     ENTITY_DESTROYED = 3;
     WEATHER_CHANGED = 4;
     TIME_CHANGED = 5;
+    SERVER_SHUTDOWN = 6;
   }
   EventType type = 1;
   Position position = 2;
   string player_id = 3;
+  string message = 8;  // Текстовое сообщение для дополнительной информации
   oneof payload {
     Block block = 4;
     Entity entity = 5;

@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"expvar"
 	"flag"
 	"fmt"
 	"log"
@@ -99,11 +98,6 @@ func main() {
 			worldService = service.NewWorldServiceWithStorage(worldStorage)
 		}
 	}
-
-	// Регистрируем expvar статистики
-	expvar.NewInt("players_connected")
-	expvar.NewInt("chunks_saved")
-	expvar.NewInt("region_compactions")
 
 	// Запускаем http-pprof/expvar, если включено
 	if *pprofPort != 0 {
