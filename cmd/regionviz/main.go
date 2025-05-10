@@ -41,8 +41,8 @@ func main() {
 
 	// Если регион не задан явно, вычисляем его из стартовых координат
 	if *regionX == -9999 || *regionY == -9999 {
-		chunkX := *startX / chunkSize
-		chunkY := *startY / chunkSize
+		chunkX := int32(*startX) / chunkSize
+		chunkY := int32(*startY) / chunkSize
 		*regionX = int(chunkX / 16)
 		*regionY = int(chunkY / 16)
 	}

@@ -90,6 +90,7 @@ message BlockAction {
   ActionType action = 1;
   Position position = 2;
   int32 block_type = 3;  // При размещении
+  map<string, string> properties = 4; // Для передачи параметров взаимодействия
 }
 
 // Сообщение чата
@@ -133,7 +134,11 @@ message Block {
   int32 x = 1;  // Локальная позиция внутри чанка
   int32 y = 2;
   int32 type = 3;
-  map<string, string> properties = 4;  // Дополнительные свойства
+  map<string, string> properties = 4;  // Свойства блока
+  bool is_dynamic = 5;                // Флаг динамического блока
+  bool is_interactive = 6;           // Флаг интерактивного блока
+  int32 tick_priority = 7;           // Приоритет обновления
+  int64 next_tick = 8;               // Время следующего тика (unix timestamp)
 }
 
 // Сущность в мире
@@ -154,6 +159,9 @@ message WorldEvent {
     WEATHER_CHANGED = 4;
     TIME_CHANGED = 5;
     SERVER_SHUTDOWN = 6;
+    BLOCK_CHANGED = 7;      // Блок изменил свое состояние (отправляется только при реальных изменениях)
+    BLOCK_INTERACTION = 8;  // Взаимодействие с блоком
+    BLOCK_TICK = 9 [deprecated = true]; // Устаревшее: тик блока, заменено BLOCK_CHANGED
   }
   EventType type = 1;
   Position position = 2;
@@ -235,4 +243,11 @@ message Ping {
 message Pong {
   int64 client_timestamp = 1;
   int64 server_timestamp = 2;
+}
+
+// Дополнительные данные для взаимодействия с блоком
+message BlockInteractionData {
+  string player_id = 1;
+  string interaction_type = 2;
+  map<string, string> data = 3;
 } 

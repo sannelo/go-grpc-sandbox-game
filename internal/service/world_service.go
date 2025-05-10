@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"math"
 	"math/rand"
 	"sync"
 	"time"
@@ -19,6 +20,7 @@ import (
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 
+	"github.com/annelo/go-grpc-server/internal/block"
 	"github.com/annelo/go-grpc-server/internal/gameloop"
 )
 
@@ -41,11 +43,15 @@ type WorldService struct {
 
 	// игровая петля
 	loop *gameloop.Loop
+
+	// Менеджер блоков
+	blockManager *block.BlockManager
 }
 
 type clientConn struct {
-	stream    game.WorldService_GameStreamServer
-	sendQueue chan *game.ServerMessage
+	stream      game.WorldService_GameStreamServer
+	highQueue   chan *game.ServerMessage // Для глобальных событий с высоким приоритетом
+	normalQueue chan *game.ServerMessage // Для остальных событий
 }
 
 const (
@@ -59,15 +65,48 @@ const (
 	sendQueueSize = 1024
 )
 
+// Добавляю adapter для привязки block.BlockManager к worldinterfaces.BlockManagerInterface
+type blockManagerAdapter struct {
+	bm *block.BlockManager
+}
+
+func (a *blockManagerAdapter) CreateBlock(x, y int32, chunkPos *game.ChunkPosition, blockType int32) (interface{}, error) {
+	return a.bm.CreateBlock(x, y, chunkPos, blockType)
+}
+func (a *blockManagerAdapter) LoadBlocksFromChunk(chunk *game.Chunk) error {
+	return a.bm.LoadBlocksFromChunk(chunk)
+}
+func (a *blockManagerAdapter) SaveBlocksToChunk(chunk *game.Chunk) error {
+	return a.bm.SaveBlocksToChunk(chunk)
+}
+func (a *blockManagerAdapter) InteractWithBlock(playerID string, x, y int32, chunkPos *game.ChunkPosition, interactionType string, data map[string]string) (*game.WorldEvent, error) {
+	return a.bm.InteractWithBlock(playerID, x, y, chunkPos, interactionType, data)
+}
+func (a *blockManagerAdapter) StartBlockUpdateLoop(ctx context.Context) {
+	a.bm.StartBlockUpdateLoop(ctx)
+}
+func (a *blockManagerAdapter) GetBlockEvents() <-chan *game.WorldEvent {
+	return a.bm.GetBlockEvents()
+}
+
 // NewWorldService создает новый экземпляр сервиса игрового мира
 func NewWorldService() *WorldService {
 	rnd := rand.New(rand.NewSource(time.Now().UnixNano()))
-	return &WorldService{
+	// Создаем основной объект сервиса
+	ws := &WorldService{
 		playerManager:    playermanager.NewPlayerManager(),
 		chunkManager:     chunkmanager.NewChunkManager(rnd),
 		clientStreams:    make(map[string]*clientConn),
 		lastPosBroadcast: make(map[string]time.Time),
 	}
+	// Инициализируем менеджер умных блоков и регистрируем фабрики
+	ws.blockManager = block.NewBlockManager(ws.chunkManager)
+	block.RegisterDynamicBlocks(ws.blockManager)
+	block.RegisterInteractiveBlocks(ws.blockManager)
+	// Связываем ChunkManager с BlockManager через adapter
+	adapter := &blockManagerAdapter{bm: ws.blockManager}
+	ws.chunkManager.SetBlockManager(adapter)
+	return ws
 }
 
 // NewWorldServiceWithStorage создает новый экземпляр сервиса игрового мира с хранилищем
@@ -88,6 +127,16 @@ func NewWorldServiceWithStorage(worldStorage storage.WorldStorage) *WorldService
 		worldStorage:     worldStorage,
 		lastPosBroadcast: make(map[string]time.Time),
 	}
+
+	// Создаем менеджер блоков
+	ws.blockManager = block.NewBlockManager(ws.chunkManager)
+	// Регистрируем динамические и интерактивные блоки
+	block.RegisterDynamicBlocks(ws.blockManager)
+	block.RegisterInteractiveBlocks(ws.blockManager)
+	// Связываем ChunkManager с BlockManager через adapter
+	adapter := &blockManagerAdapter{bm: ws.blockManager}
+	ws.chunkManager.SetBlockManager(adapter)
+
 	return ws
 }
 
@@ -111,6 +160,12 @@ func (s *WorldService) Start(ctx context.Context) {
 	// Запускаем периодический мониторинг кеша
 	go s.monitorCacheUsage(ctx)
 
+	// Запускаем обновление блоков
+	go s.blockManager.StartBlockUpdateLoop(ctx)
+
+	// Запускаем обработчик событий от блоков
+	go s.processBlockEvents(ctx)
+
 	// --- GameLoop ---
 	deps := gameloop.Dependencies{
 		Players:        s.playerManager,
@@ -121,6 +176,7 @@ func (s *WorldService) Start(ctx context.Context) {
 	s.loop = gameloop.NewLoop(50*time.Millisecond, deps,
 		gameloop.NewTimeSystem(),
 		gameloop.NewWeatherSystem(time.Now().UnixNano()),
+		gameloop.NewBlockSystem(),
 	)
 	go s.loop.Run(ctx)
 }
@@ -206,16 +262,31 @@ func (s *WorldService) GameStream(stream game.WorldService_GameStreamServer) err
 
 	// Регистрируем поток для этого игрока
 	s.mu.Lock()
-	conn := &clientConn{stream: stream, sendQueue: make(chan *game.ServerMessage, sendQueueSize)}
+	conn := &clientConn{
+		stream:      stream,
+		highQueue:   make(chan *game.ServerMessage, sendQueueSize),
+		normalQueue: make(chan *game.ServerMessage, sendQueueSize),
+	}
 	s.clientStreams[playerID] = conn
 	s.mu.Unlock()
 
 	// Оповещаем других игроков о подключении нового игрока
 	s.broadcastPlayerUpdate(playerID, player.Position, true)
 
-	// sender goroutine
+	// sender goroutine with priority: сначала глобальные события, потом остальные
 	go func() {
-		for msg := range conn.sendQueue {
+		for {
+			var msg *game.ServerMessage
+			// Пытаемся получить глобальное событие без блокировки
+			select {
+			case msg = <-conn.highQueue:
+			default:
+				// Если нет глобальных, ждём любое
+				select {
+				case msg = <-conn.highQueue:
+				case msg = <-conn.normalQueue:
+				}
+			}
 			if err := conn.stream.Send(msg); err != nil {
 				log.Printf("Ошибка отправки клиенту %s: %v", playerID, err)
 				return
@@ -238,7 +309,8 @@ func (s *WorldService) GameStream(stream game.WorldService_GameStreamServer) err
 	// Закрываем очередь и удаляем
 	s.mu.Lock()
 	if conn, ok := s.clientStreams[playerID]; ok {
-		close(conn.sendQueue)
+		close(conn.highQueue)
+		close(conn.normalQueue)
 		delete(s.clientStreams, playerID)
 	}
 	s.mu.Unlock()
@@ -289,6 +361,9 @@ func (s *WorldService) GetChunks(req *game.ChunkRequest, stream game.WorldServic
 
 	log.Printf("Игрок находится в чанке [%d, %d]", playerChunkX, playerChunkY)
 
+	// DEBUG: log chunk send details
+	log.Printf("GetChunks debug: start sending chunks around [%d,%d] with radius %d", playerChunkX, playerChunkY, radius)
+
 	// Получаем и отправляем чанки в указанном радиусе
 	chunksTotal := 0
 	chunksSent := 0
@@ -298,18 +373,21 @@ func (s *WorldService) GetChunks(req *game.ChunkRequest, stream game.WorldServic
 			chunksTotal++
 			chunkPos := &game.ChunkPosition{X: x, Y: y}
 
-			// Получаем чанк (или генерируем, если его нет)
-			chunk, err := s.chunkManager.GetOrGenerateChunk(chunkPos)
+			// Получаем безопасную копию чанка для отправки
+			chunk, err := s.chunkManager.GetChunkSnapshot(chunkPos)
 			if err != nil {
-				log.Printf("Ошибка при получении чанка [%d, %d]: %v", x, y, err)
+				log.Printf("Ошибка при получении или копировании чанка [%d, %d]: %v", x, y, err)
 				continue
 			}
 
+			// DEBUG: about to send chunk
+			log.Printf("GetChunks debug: sending chunk [%d, %d] with %d blocks", x, y, len(chunk.Blocks))
 			// Отправляем чанк клиенту
 			if err := stream.Send(chunk); err != nil {
 				log.Printf("Ошибка при отправке чанка [%d, %d]: %v", x, y, err)
 				return status.Errorf(codes.Internal, "Ошибка при отправке чанка: %v", err)
 			}
+			log.Printf("GetChunks debug: chunk [%d, %d] sent successfully", x, y)
 			chunksSent++
 		}
 	}
@@ -510,8 +588,47 @@ func (s *WorldService) handleBlockAction(playerID string, action *game.BlockActi
 		s.broadcastWorldEvent(worldEvent)
 
 	case game.BlockAction_INTERACT:
-		// Взаимодействие с блоком (пока не реализовано)
-		log.Printf("Взаимодействие с блоком не реализовано")
+		// Получаем позицию блока
+		blockX := int32(action.Position.X) % chunkmanager.ChunkSize
+		if blockX < 0 {
+			blockX += chunkmanager.ChunkSize
+		}
+		blockY := int32(action.Position.Y) % chunkmanager.ChunkSize
+		if blockY < 0 {
+			blockY += chunkmanager.ChunkSize
+		}
+
+		// Вычисляем позицию чанка
+		chunkX := int32(math.Floor(float64(action.Position.X) / float64(chunkmanager.ChunkSize)))
+		chunkY := int32(math.Floor(float64(action.Position.Y) / float64(chunkmanager.ChunkSize)))
+		chunkPos := &game.ChunkPosition{X: chunkX, Y: chunkY}
+
+		// Попытка взаимодействия с блоком
+		interactionData := make(map[string]string)
+		// Пока используем жестко заданные значения
+		interactionData["interaction_type"] = "use"
+
+		event, err := s.blockManager.InteractWithBlock(
+			playerID,
+			blockX,
+			blockY,
+			chunkPos,
+			interactionData["interaction_type"],
+			interactionData,
+		)
+
+		if err != nil {
+			// Отправляем сообщение об ошибке игроку
+			s.sendMessageToPlayer(playerID, fmt.Sprintf("Ошибка взаимодействия: %v", err))
+			return
+		}
+
+		// Отправляем событие всем клиентам
+		if event != nil {
+			s.broadcastWorldEvent(event)
+		}
+
+		return
 	}
 
 	// Временно отключаем сохранение чанков
@@ -568,7 +685,7 @@ func (s *WorldService) handleChatMessage(playerID string, chatMsg *game.ChatMess
 		// Отправляем получателю
 		s.mu.RLock()
 		if targetStream, ok := s.clientStreams[chatMsg.TargetPlayerId]; ok {
-			targetStream.sendQueue <- serverMsg
+			targetStream.send(serverMsg, false)
 		}
 		s.mu.RUnlock()
 
@@ -576,7 +693,7 @@ func (s *WorldService) handleChatMessage(playerID string, chatMsg *game.ChatMess
 		if playerID != chatMsg.TargetPlayerId {
 			s.mu.RLock()
 			if sourceStream, ok := s.clientStreams[playerID]; ok {
-				sourceStream.sendQueue <- serverMsg
+				sourceStream.send(serverMsg, false)
 			}
 			s.mu.RUnlock()
 		}
@@ -593,12 +710,10 @@ func (s *WorldService) handlePing(playerID string, ping *game.Ping) {
 
 	// Отправляем ответ только отправителю пинга
 	s.mu.RLock()
-	if stream, ok := s.clientStreams[playerID]; ok {
-		stream.sendQueue <- &game.ServerMessage{
-			Payload: &game.ServerMessage_Pong{
-				Pong: pong,
-			},
-		}
+	if conn, ok := s.clientStreams[playerID]; ok {
+		conn.send(&game.ServerMessage{
+			Payload: &game.ServerMessage_Pong{Pong: pong},
+		}, false)
 	}
 	s.mu.RUnlock()
 }
@@ -680,14 +795,34 @@ func isWithinRadius(p1, p2 *game.Position) bool {
 	return true
 }
 
-// broadcastWorldEvent отправляет событие мира всем игрокам
+// broadcastWorldEvent отправляет событие мира: глобальные всем, остальные по радиусу видимости
 func (s *WorldService) broadcastWorldEvent(event *game.WorldEvent) {
-	// Отправляем сообщение всем игрокам
-	s.broadcastToAll(&game.ServerMessage{
-		Payload: &game.ServerMessage_WorldEvent{
-			WorldEvent: event,
-		},
-	})
+	// Формируем сообщение
+	msg := &game.ServerMessage{Payload: &game.ServerMessage_WorldEvent{WorldEvent: event}}
+	// Глобальные события — всем
+	switch event.Type {
+	case game.WorldEvent_WEATHER_CHANGED, game.WorldEvent_TIME_CHANGED, game.WorldEvent_SERVER_SHUTDOWN:
+		log.Printf("[broadcastWorldEvent] type=%v pos=%v", event.Type, event.Position)
+		s.broadcastToAll(msg)
+		return
+	}
+	// Остальные события — по радиусу видимости
+	if event.Position == nil {
+		// Если нет позиции, отправляем всем
+		s.broadcastToAll(msg)
+		return
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	for playerID, conn := range s.clientStreams {
+		player, err := s.playerManager.GetPlayer(playerID)
+		if err != nil || player.Position == nil {
+			continue
+		}
+		if isWithinRadius(event.Position, player.Position) {
+			conn.send(msg, false)
+		}
+	}
 }
 
 // broadcastToAll отправляет сообщение всем подключенным игрокам
@@ -744,7 +879,8 @@ func (s *WorldService) DisconnectAllClients() {
 		conn.send(disconnectMessage, true) // блокирующая отправка, важно доставить!
 
 		// Закрываем очередь
-		close(conn.sendQueue)
+		close(conn.highQueue)
+		close(conn.normalQueue)
 	}
 	// Очищаем мапу соединений
 	s.clientStreams = make(map[string]*clientConn)
@@ -757,15 +893,95 @@ func (s *WorldService) DisconnectAllClients() {
 // Если block==true – будет ожидать, пока появится место.
 // Если block==false – при переполнении сообщение дропается.
 func (c *clientConn) send(msg *game.ServerMessage, block bool) {
+	// Определяем канал по приоритету события
+	var q chan *game.ServerMessage
+	if evMsg, ok := msg.Payload.(*game.ServerMessage_WorldEvent); ok {
+		switch evMsg.WorldEvent.Type {
+		case game.WorldEvent_WEATHER_CHANGED, game.WorldEvent_TIME_CHANGED, game.WorldEvent_SERVER_SHUTDOWN:
+			q = c.highQueue
+		default:
+			q = c.normalQueue
+		}
+	} else {
+		q = c.normalQueue
+	}
 	if block {
-		c.sendQueue <- msg
+		q <- msg
+	} else {
+		select {
+		case q <- msg:
+		default:
+		}
+	}
+}
+
+// processBlockEvents обрабатывает события от блоков и отправляет их клиентам
+func (s *WorldService) processBlockEvents(ctx context.Context) {
+	blockEvents := s.blockManager.GetBlockEvents()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case event := <-blockEvents:
+			// Отправляем событие клиентам
+			s.broadcastWorldEvent(event)
+		}
+	}
+}
+
+// loadChunkWithBlocks загружает чанк и его блоки в BlockManager
+func (s *WorldService) loadChunkWithBlocks(pos *game.ChunkPosition) (*game.Chunk, error) {
+	// Получаем чанк
+	chunk, err := s.chunkManager.GetOrGenerateChunk(pos)
+	if err != nil {
+		return nil, err
+	}
+
+	// Загружаем блоки в BlockManager
+	err = s.blockManager.LoadBlocksFromChunk(chunk)
+	if err != nil {
+		log.Printf("Ошибка при загрузке блоков из чанка %s: %v", getChunkKey(pos), err)
+	}
+
+	// Проверяем, содержит ли чанк активные блоки
+	if s.blockManager.GetChunkActiveStatus(pos) {
+		// Помечаем чанк как активный в ChunkManager
+		s.chunkManager.MarkChunkAsActive(pos)
+	}
+
+	return chunk, nil
+}
+
+// getChunkKey возвращает строковый ключ для чанка
+func getChunkKey(pos *game.ChunkPosition) string {
+	return fmt.Sprintf("%d:%d", pos.X, pos.Y)
+}
+
+// sendMessageToPlayer отправляет сообщение конкретному игроку
+func (s *WorldService) sendMessageToPlayer(playerID string, message string) {
+	s.mu.RLock()
+	conn, exists := s.clientStreams[playerID]
+	s.mu.RUnlock()
+
+	if !exists {
 		return
 	}
-	select {
-	case c.sendQueue <- msg:
-	default:
-		// очередь заполнена – пропускаем
+
+	// Создаем сообщение чата
+	chatMsg := &game.ChatBroadcast{
+		PlayerId:   "server",
+		PlayerName: "Сервер",
+		Content:    message,
+		IsGlobal:   false,
 	}
+
+	// Отправляем сообщение игроку
+	conn.send(&game.ServerMessage{
+		Payload: &game.ServerMessage_ChatBroadcast{
+			ChatBroadcast: chatMsg,
+		},
+	}, false)
 }
 
 func init() {

@@ -73,13 +73,17 @@ func (BlockAction_ActionType) EnumDescriptor() ([]byte, []int) {
 type WorldEvent_EventType int32
 
 const (
-	WorldEvent_BLOCK_PLACED     WorldEvent_EventType = 0
-	WorldEvent_BLOCK_DESTROYED  WorldEvent_EventType = 1
-	WorldEvent_ENTITY_SPAWNED   WorldEvent_EventType = 2
-	WorldEvent_ENTITY_DESTROYED WorldEvent_EventType = 3
-	WorldEvent_WEATHER_CHANGED  WorldEvent_EventType = 4
-	WorldEvent_TIME_CHANGED     WorldEvent_EventType = 5
-	WorldEvent_SERVER_SHUTDOWN  WorldEvent_EventType = 6
+	WorldEvent_BLOCK_PLACED      WorldEvent_EventType = 0
+	WorldEvent_BLOCK_DESTROYED   WorldEvent_EventType = 1
+	WorldEvent_ENTITY_SPAWNED    WorldEvent_EventType = 2
+	WorldEvent_ENTITY_DESTROYED  WorldEvent_EventType = 3
+	WorldEvent_WEATHER_CHANGED   WorldEvent_EventType = 4
+	WorldEvent_TIME_CHANGED      WorldEvent_EventType = 5
+	WorldEvent_SERVER_SHUTDOWN   WorldEvent_EventType = 6
+	WorldEvent_BLOCK_CHANGED     WorldEvent_EventType = 7 // Блок изменил свое состояние (отправляется только при реальных изменениях)
+	WorldEvent_BLOCK_INTERACTION WorldEvent_EventType = 8 // Взаимодействие с блоком
+	// Deprecated: Marked as deprecated in proto/game/game.proto.
+	WorldEvent_BLOCK_TICK WorldEvent_EventType = 9 // Устаревшее: тик блока, заменено BLOCK_CHANGED
 )
 
 // Enum value maps for WorldEvent_EventType.
@@ -92,15 +96,21 @@ var (
 		4: "WEATHER_CHANGED",
 		5: "TIME_CHANGED",
 		6: "SERVER_SHUTDOWN",
+		7: "BLOCK_CHANGED",
+		8: "BLOCK_INTERACTION",
+		9: "BLOCK_TICK",
 	}
 	WorldEvent_EventType_value = map[string]int32{
-		"BLOCK_PLACED":     0,
-		"BLOCK_DESTROYED":  1,
-		"ENTITY_SPAWNED":   2,
-		"ENTITY_DESTROYED": 3,
-		"WEATHER_CHANGED":  4,
-		"TIME_CHANGED":     5,
-		"SERVER_SHUTDOWN":  6,
+		"BLOCK_PLACED":      0,
+		"BLOCK_DESTROYED":   1,
+		"ENTITY_SPAWNED":    2,
+		"ENTITY_DESTROYED":  3,
+		"WEATHER_CHANGED":   4,
+		"TIME_CHANGED":      5,
+		"SERVER_SHUTDOWN":   6,
+		"BLOCK_CHANGED":     7,
+		"BLOCK_INTERACTION": 8,
+		"BLOCK_TICK":        9,
 	}
 )
 
@@ -781,7 +791,8 @@ type BlockAction struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Action        BlockAction_ActionType `protobuf:"varint,1,opt,name=action,proto3,enum=game.BlockAction_ActionType" json:"action,omitempty"`
 	Position      *Position              `protobuf:"bytes,2,opt,name=position,proto3" json:"position,omitempty"`
-	BlockType     int32                  `protobuf:"varint,3,opt,name=block_type,json=blockType,proto3" json:"block_type,omitempty"` // При размещении
+	BlockType     int32                  `protobuf:"varint,3,opt,name=block_type,json=blockType,proto3" json:"block_type,omitempty"`                                                           // При размещении
+	Properties    map[string]string      `protobuf:"bytes,4,rep,name=properties,proto3" json:"properties,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"` // Для передачи параметров взаимодействия
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -835,6 +846,13 @@ func (x *BlockAction) GetBlockType() int32 {
 		return x.BlockType
 	}
 	return 0
+}
+
+func (x *BlockAction) GetProperties() map[string]string {
+	if x != nil {
+		return x.Properties
+	}
+	return nil
 }
 
 // Сообщение чата
@@ -1156,7 +1174,11 @@ type Block struct {
 	X             int32                  `protobuf:"varint,1,opt,name=x,proto3" json:"x,omitempty"` // Локальная позиция внутри чанка
 	Y             int32                  `protobuf:"varint,2,opt,name=y,proto3" json:"y,omitempty"`
 	Type          int32                  `protobuf:"varint,3,opt,name=type,proto3" json:"type,omitempty"`
-	Properties    map[string]string      `protobuf:"bytes,4,rep,name=properties,proto3" json:"properties,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"` // Дополнительные свойства
+	Properties    map[string]string      `protobuf:"bytes,4,rep,name=properties,proto3" json:"properties,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"` // Свойства блока
+	IsDynamic     bool                   `protobuf:"varint,5,opt,name=is_dynamic,json=isDynamic,proto3" json:"is_dynamic,omitempty"`                                                           // Флаг динамического блока
+	IsInteractive bool                   `protobuf:"varint,6,opt,name=is_interactive,json=isInteractive,proto3" json:"is_interactive,omitempty"`                                               // Флаг интерактивного блока
+	TickPriority  int32                  `protobuf:"varint,7,opt,name=tick_priority,json=tickPriority,proto3" json:"tick_priority,omitempty"`                                                  // Приоритет обновления
+	NextTick      int64                  `protobuf:"varint,8,opt,name=next_tick,json=nextTick,proto3" json:"next_tick,omitempty"`                                                              // Время следующего тика (unix timestamp)
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -1217,6 +1239,34 @@ func (x *Block) GetProperties() map[string]string {
 		return x.Properties
 	}
 	return nil
+}
+
+func (x *Block) GetIsDynamic() bool {
+	if x != nil {
+		return x.IsDynamic
+	}
+	return false
+}
+
+func (x *Block) GetIsInteractive() bool {
+	if x != nil {
+		return x.IsInteractive
+	}
+	return false
+}
+
+func (x *Block) GetTickPriority() int32 {
+	if x != nil {
+		return x.TickPriority
+	}
+	return 0
+}
+
+func (x *Block) GetNextTick() int64 {
+	if x != nil {
+		return x.NextTick
+	}
+	return 0
 }
 
 // Сущность в мире
@@ -2000,6 +2050,67 @@ func (x *Pong) GetServerTimestamp() int64 {
 	return 0
 }
 
+// Дополнительные данные для взаимодействия с блоком
+type BlockInteractionData struct {
+	state           protoimpl.MessageState `protogen:"open.v1"`
+	PlayerId        string                 `protobuf:"bytes,1,opt,name=player_id,json=playerId,proto3" json:"player_id,omitempty"`
+	InteractionType string                 `protobuf:"bytes,2,opt,name=interaction_type,json=interactionType,proto3" json:"interaction_type,omitempty"`
+	Data            map[string]string      `protobuf:"bytes,3,rep,name=data,proto3" json:"data,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
+	unknownFields   protoimpl.UnknownFields
+	sizeCache       protoimpl.SizeCache
+}
+
+func (x *BlockInteractionData) Reset() {
+	*x = BlockInteractionData{}
+	mi := &file_proto_game_game_proto_msgTypes[26]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *BlockInteractionData) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*BlockInteractionData) ProtoMessage() {}
+
+func (x *BlockInteractionData) ProtoReflect() protoreflect.Message {
+	mi := &file_proto_game_game_proto_msgTypes[26]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use BlockInteractionData.ProtoReflect.Descriptor instead.
+func (*BlockInteractionData) Descriptor() ([]byte, []int) {
+	return file_proto_game_game_proto_rawDescGZIP(), []int{26}
+}
+
+func (x *BlockInteractionData) GetPlayerId() string {
+	if x != nil {
+		return x.PlayerId
+	}
+	return ""
+}
+
+func (x *BlockInteractionData) GetInteractionType() string {
+	if x != nil {
+		return x.InteractionType
+	}
+	return ""
+}
+
+func (x *BlockInteractionData) GetData() map[string]string {
+	if x != nil {
+		return x.Data
+	}
+	return nil
+}
+
 var File_proto_game_game_proto protoreflect.FileDescriptor
 
 const file_proto_game_game_proto_rawDesc = "" +
@@ -2044,12 +2155,18 @@ const file_proto_game_game_proto_rawDesc = "" +
 	"\fnew_position\x18\x01 \x01(\v2\x0e.game.PositionR\vnewPosition\x12\x1c\n" +
 	"\tdirection\x18\x02 \x01(\x02R\tdirection\x12\x1d\n" +
 	"\n" +
-	"is_running\x18\x03 \x01(\bR\tisRunning\"\xc2\x01\n" +
+	"is_running\x18\x03 \x01(\bR\tisRunning\"\xc4\x02\n" +
 	"\vBlockAction\x124\n" +
 	"\x06action\x18\x01 \x01(\x0e2\x1c.game.BlockAction.ActionTypeR\x06action\x12*\n" +
 	"\bposition\x18\x02 \x01(\v2\x0e.game.PositionR\bposition\x12\x1d\n" +
 	"\n" +
-	"block_type\x18\x03 \x01(\x05R\tblockType\"2\n" +
+	"block_type\x18\x03 \x01(\x05R\tblockType\x12A\n" +
+	"\n" +
+	"properties\x18\x04 \x03(\v2!.game.BlockAction.PropertiesEntryR\n" +
+	"properties\x1a=\n" +
+	"\x0fPropertiesEntry\x12\x10\n" +
+	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
+	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"2\n" +
 	"\n" +
 	"ActionType\x12\t\n" +
 	"\x05PLACE\x10\x00\x12\v\n" +
@@ -2075,14 +2192,19 @@ const file_proto_game_game_proto_rawDesc = "" +
 	"\x05Chunk\x12/\n" +
 	"\bposition\x18\x01 \x01(\v2\x13.game.ChunkPositionR\bposition\x12#\n" +
 	"\x06blocks\x18\x02 \x03(\v2\v.game.BlockR\x06blocks\x12(\n" +
-	"\bentities\x18\x03 \x03(\v2\f.game.EntityR\bentities\"\xb3\x01\n" +
+	"\bentities\x18\x03 \x03(\v2\f.game.EntityR\bentities\"\xbb\x02\n" +
 	"\x05Block\x12\f\n" +
 	"\x01x\x18\x01 \x01(\x05R\x01x\x12\f\n" +
 	"\x01y\x18\x02 \x01(\x05R\x01y\x12\x12\n" +
 	"\x04type\x18\x03 \x01(\x05R\x04type\x12;\n" +
 	"\n" +
 	"properties\x18\x04 \x03(\v2\x1b.game.Block.PropertiesEntryR\n" +
-	"properties\x1a=\n" +
+	"properties\x12\x1d\n" +
+	"\n" +
+	"is_dynamic\x18\x05 \x01(\bR\tisDynamic\x12%\n" +
+	"\x0eis_interactive\x18\x06 \x01(\bR\risInteractive\x12#\n" +
+	"\rtick_priority\x18\a \x01(\x05R\ftickPriority\x12\x1b\n" +
+	"\tnext_tick\x18\b \x01(\x03R\bnextTick\x1a=\n" +
 	"\x0fPropertiesEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
 	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"\xd5\x01\n" +
@@ -2095,7 +2217,7 @@ const file_proto_game_game_proto_rawDesc = "" +
 	"properties\x1a=\n" +
 	"\x0fPropertiesEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
-	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"\xec\x03\n" +
+	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"\xaa\x04\n" +
 	"\n" +
 	"WorldEvent\x12.\n" +
 	"\x04type\x18\x01 \x01(\x0e2\x1a.game.WorldEvent.EventTypeR\x04type\x12*\n" +
@@ -2105,7 +2227,7 @@ const file_proto_game_game_proto_rawDesc = "" +
 	"\x05block\x18\x04 \x01(\v2\v.game.BlockH\x00R\x05block\x12&\n" +
 	"\x06entity\x18\x05 \x01(\v2\f.game.EntityH\x00R\x06entity\x12)\n" +
 	"\aweather\x18\x06 \x01(\v2\r.game.WeatherH\x00R\aweather\x12-\n" +
-	"\ttime_info\x18\a \x01(\v2\x0e.game.TimeInfoH\x00R\btimeInfo\"\x98\x01\n" +
+	"\ttime_info\x18\a \x01(\v2\x0e.game.TimeInfoH\x00R\btimeInfo\"\xd6\x01\n" +
 	"\tEventType\x12\x10\n" +
 	"\fBLOCK_PLACED\x10\x00\x12\x13\n" +
 	"\x0fBLOCK_DESTROYED\x10\x01\x12\x12\n" +
@@ -2113,7 +2235,11 @@ const file_proto_game_game_proto_rawDesc = "" +
 	"\x10ENTITY_DESTROYED\x10\x03\x12\x13\n" +
 	"\x0fWEATHER_CHANGED\x10\x04\x12\x10\n" +
 	"\fTIME_CHANGED\x10\x05\x12\x13\n" +
-	"\x0fSERVER_SHUTDOWN\x10\x06B\t\n" +
+	"\x0fSERVER_SHUTDOWN\x10\x06\x12\x11\n" +
+	"\rBLOCK_CHANGED\x10\a\x12\x15\n" +
+	"\x11BLOCK_INTERACTION\x10\b\x12\x12\n" +
+	"\n" +
+	"BLOCK_TICK\x10\t\x1a\x02\b\x01B\t\n" +
 	"\apayload\"\xc6\x01\n" +
 	"\fPlayerUpdate\x12\x1b\n" +
 	"\tplayer_id\x18\x01 \x01(\tR\bplayerId\x12*\n" +
@@ -2168,7 +2294,14 @@ const file_proto_game_game_proto_rawDesc = "" +
 	"\ttimestamp\x18\x01 \x01(\x03R\ttimestamp\"\\\n" +
 	"\x04Pong\x12)\n" +
 	"\x10client_timestamp\x18\x01 \x01(\x03R\x0fclientTimestamp\x12)\n" +
-	"\x10server_timestamp\x18\x02 \x01(\x03R\x0fserverTimestamp2\xee\x01\n" +
+	"\x10server_timestamp\x18\x02 \x01(\x03R\x0fserverTimestamp\"\xd1\x01\n" +
+	"\x14BlockInteractionData\x12\x1b\n" +
+	"\tplayer_id\x18\x01 \x01(\tR\bplayerId\x12)\n" +
+	"\x10interaction_type\x18\x02 \x01(\tR\x0finteractionType\x128\n" +
+	"\x04data\x18\x03 \x03(\v2$.game.BlockInteractionData.DataEntryR\x04data\x1a7\n" +
+	"\tDataEntry\x12\x10\n" +
+	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
+	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x012\xee\x01\n" +
 	"\fWorldService\x121\n" +
 	"\bJoinGame\x12\x11.game.JoinRequest\x1a\x12.game.JoinResponse\x12:\n" +
 	"\n" +
@@ -2189,41 +2322,44 @@ func file_proto_game_game_proto_rawDescGZIP() []byte {
 }
 
 var file_proto_game_game_proto_enumTypes = make([]protoimpl.EnumInfo, 3)
-var file_proto_game_game_proto_msgTypes = make([]protoimpl.MessageInfo, 30)
+var file_proto_game_game_proto_msgTypes = make([]protoimpl.MessageInfo, 33)
 var file_proto_game_game_proto_goTypes = []any{
-	(BlockAction_ActionType)(0), // 0: game.BlockAction.ActionType
-	(WorldEvent_EventType)(0),   // 1: game.WorldEvent.EventType
-	(Weather_WeatherType)(0),    // 2: game.Weather.WeatherType
-	(*JoinRequest)(nil),         // 3: game.JoinRequest
-	(*JoinResponse)(nil),        // 4: game.JoinResponse
-	(*ChunkRequest)(nil),        // 5: game.ChunkRequest
-	(*GenerateRequest)(nil),     // 6: game.GenerateRequest
-	(*GenerateResponse)(nil),    // 7: game.GenerateResponse
-	(*ClientMessage)(nil),       // 8: game.ClientMessage
-	(*ServerMessage)(nil),       // 9: game.ServerMessage
-	(*PlayerMovement)(nil),      // 10: game.PlayerMovement
-	(*BlockAction)(nil),         // 11: game.BlockAction
-	(*ChatMessage)(nil),         // 12: game.ChatMessage
-	(*Player)(nil),              // 13: game.Player
-	(*Position)(nil),            // 14: game.Position
-	(*ChunkPosition)(nil),       // 15: game.ChunkPosition
-	(*Chunk)(nil),               // 16: game.Chunk
-	(*Block)(nil),               // 17: game.Block
-	(*Entity)(nil),              // 18: game.Entity
-	(*WorldEvent)(nil),          // 19: game.WorldEvent
-	(*PlayerUpdate)(nil),        // 20: game.PlayerUpdate
-	(*ChunkUpdate)(nil),         // 21: game.ChunkUpdate
-	(*BlockUpdate)(nil),         // 22: game.BlockUpdate
-	(*EntityUpdate)(nil),        // 23: game.EntityUpdate
-	(*Weather)(nil),             // 24: game.Weather
-	(*TimeInfo)(nil),            // 25: game.TimeInfo
-	(*ChatBroadcast)(nil),       // 26: game.ChatBroadcast
-	(*Ping)(nil),                // 27: game.Ping
-	(*Pong)(nil),                // 28: game.Pong
-	nil,                         // 29: game.Block.PropertiesEntry
-	nil,                         // 30: game.Entity.PropertiesEntry
-	nil,                         // 31: game.BlockUpdate.PropertiesEntry
-	nil,                         // 32: game.EntityUpdate.PropertiesEntry
+	(BlockAction_ActionType)(0),  // 0: game.BlockAction.ActionType
+	(WorldEvent_EventType)(0),    // 1: game.WorldEvent.EventType
+	(Weather_WeatherType)(0),     // 2: game.Weather.WeatherType
+	(*JoinRequest)(nil),          // 3: game.JoinRequest
+	(*JoinResponse)(nil),         // 4: game.JoinResponse
+	(*ChunkRequest)(nil),         // 5: game.ChunkRequest
+	(*GenerateRequest)(nil),      // 6: game.GenerateRequest
+	(*GenerateResponse)(nil),     // 7: game.GenerateResponse
+	(*ClientMessage)(nil),        // 8: game.ClientMessage
+	(*ServerMessage)(nil),        // 9: game.ServerMessage
+	(*PlayerMovement)(nil),       // 10: game.PlayerMovement
+	(*BlockAction)(nil),          // 11: game.BlockAction
+	(*ChatMessage)(nil),          // 12: game.ChatMessage
+	(*Player)(nil),               // 13: game.Player
+	(*Position)(nil),             // 14: game.Position
+	(*ChunkPosition)(nil),        // 15: game.ChunkPosition
+	(*Chunk)(nil),                // 16: game.Chunk
+	(*Block)(nil),                // 17: game.Block
+	(*Entity)(nil),               // 18: game.Entity
+	(*WorldEvent)(nil),           // 19: game.WorldEvent
+	(*PlayerUpdate)(nil),         // 20: game.PlayerUpdate
+	(*ChunkUpdate)(nil),          // 21: game.ChunkUpdate
+	(*BlockUpdate)(nil),          // 22: game.BlockUpdate
+	(*EntityUpdate)(nil),         // 23: game.EntityUpdate
+	(*Weather)(nil),              // 24: game.Weather
+	(*TimeInfo)(nil),             // 25: game.TimeInfo
+	(*ChatBroadcast)(nil),        // 26: game.ChatBroadcast
+	(*Ping)(nil),                 // 27: game.Ping
+	(*Pong)(nil),                 // 28: game.Pong
+	(*BlockInteractionData)(nil), // 29: game.BlockInteractionData
+	nil,                          // 30: game.BlockAction.PropertiesEntry
+	nil,                          // 31: game.Block.PropertiesEntry
+	nil,                          // 32: game.Entity.PropertiesEntry
+	nil,                          // 33: game.BlockUpdate.PropertiesEntry
+	nil,                          // 34: game.EntityUpdate.PropertiesEntry
+	nil,                          // 35: game.BlockInteractionData.DataEntry
 }
 var file_proto_game_game_proto_depIdxs = []int32{
 	14, // 0: game.JoinResponse.spawn_position:type_name -> game.Position
@@ -2241,40 +2377,42 @@ var file_proto_game_game_proto_depIdxs = []int32{
 	14, // 12: game.PlayerMovement.new_position:type_name -> game.Position
 	0,  // 13: game.BlockAction.action:type_name -> game.BlockAction.ActionType
 	14, // 14: game.BlockAction.position:type_name -> game.Position
-	14, // 15: game.Player.position:type_name -> game.Position
-	15, // 16: game.Chunk.position:type_name -> game.ChunkPosition
-	17, // 17: game.Chunk.blocks:type_name -> game.Block
-	18, // 18: game.Chunk.entities:type_name -> game.Entity
-	29, // 19: game.Block.properties:type_name -> game.Block.PropertiesEntry
-	14, // 20: game.Entity.position:type_name -> game.Position
-	30, // 21: game.Entity.properties:type_name -> game.Entity.PropertiesEntry
-	1,  // 22: game.WorldEvent.type:type_name -> game.WorldEvent.EventType
-	14, // 23: game.WorldEvent.position:type_name -> game.Position
-	17, // 24: game.WorldEvent.block:type_name -> game.Block
-	18, // 25: game.WorldEvent.entity:type_name -> game.Entity
-	24, // 26: game.WorldEvent.weather:type_name -> game.Weather
-	25, // 27: game.WorldEvent.time_info:type_name -> game.TimeInfo
-	14, // 28: game.PlayerUpdate.position:type_name -> game.Position
-	15, // 29: game.ChunkUpdate.position:type_name -> game.ChunkPosition
-	22, // 30: game.ChunkUpdate.block_updates:type_name -> game.BlockUpdate
-	23, // 31: game.ChunkUpdate.entity_updates:type_name -> game.EntityUpdate
-	31, // 32: game.BlockUpdate.properties:type_name -> game.BlockUpdate.PropertiesEntry
-	14, // 33: game.EntityUpdate.position:type_name -> game.Position
-	32, // 34: game.EntityUpdate.properties:type_name -> game.EntityUpdate.PropertiesEntry
-	2,  // 35: game.Weather.type:type_name -> game.Weather.WeatherType
-	3,  // 36: game.WorldService.JoinGame:input_type -> game.JoinRequest
-	8,  // 37: game.WorldService.GameStream:input_type -> game.ClientMessage
-	5,  // 38: game.WorldService.GetChunks:input_type -> game.ChunkRequest
-	6,  // 39: game.WorldService.GenerateChunks:input_type -> game.GenerateRequest
-	4,  // 40: game.WorldService.JoinGame:output_type -> game.JoinResponse
-	9,  // 41: game.WorldService.GameStream:output_type -> game.ServerMessage
-	16, // 42: game.WorldService.GetChunks:output_type -> game.Chunk
-	7,  // 43: game.WorldService.GenerateChunks:output_type -> game.GenerateResponse
-	40, // [40:44] is the sub-list for method output_type
-	36, // [36:40] is the sub-list for method input_type
-	36, // [36:36] is the sub-list for extension type_name
-	36, // [36:36] is the sub-list for extension extendee
-	0,  // [0:36] is the sub-list for field type_name
+	30, // 15: game.BlockAction.properties:type_name -> game.BlockAction.PropertiesEntry
+	14, // 16: game.Player.position:type_name -> game.Position
+	15, // 17: game.Chunk.position:type_name -> game.ChunkPosition
+	17, // 18: game.Chunk.blocks:type_name -> game.Block
+	18, // 19: game.Chunk.entities:type_name -> game.Entity
+	31, // 20: game.Block.properties:type_name -> game.Block.PropertiesEntry
+	14, // 21: game.Entity.position:type_name -> game.Position
+	32, // 22: game.Entity.properties:type_name -> game.Entity.PropertiesEntry
+	1,  // 23: game.WorldEvent.type:type_name -> game.WorldEvent.EventType
+	14, // 24: game.WorldEvent.position:type_name -> game.Position
+	17, // 25: game.WorldEvent.block:type_name -> game.Block
+	18, // 26: game.WorldEvent.entity:type_name -> game.Entity
+	24, // 27: game.WorldEvent.weather:type_name -> game.Weather
+	25, // 28: game.WorldEvent.time_info:type_name -> game.TimeInfo
+	14, // 29: game.PlayerUpdate.position:type_name -> game.Position
+	15, // 30: game.ChunkUpdate.position:type_name -> game.ChunkPosition
+	22, // 31: game.ChunkUpdate.block_updates:type_name -> game.BlockUpdate
+	23, // 32: game.ChunkUpdate.entity_updates:type_name -> game.EntityUpdate
+	33, // 33: game.BlockUpdate.properties:type_name -> game.BlockUpdate.PropertiesEntry
+	14, // 34: game.EntityUpdate.position:type_name -> game.Position
+	34, // 35: game.EntityUpdate.properties:type_name -> game.EntityUpdate.PropertiesEntry
+	2,  // 36: game.Weather.type:type_name -> game.Weather.WeatherType
+	35, // 37: game.BlockInteractionData.data:type_name -> game.BlockInteractionData.DataEntry
+	3,  // 38: game.WorldService.JoinGame:input_type -> game.JoinRequest
+	8,  // 39: game.WorldService.GameStream:input_type -> game.ClientMessage
+	5,  // 40: game.WorldService.GetChunks:input_type -> game.ChunkRequest
+	6,  // 41: game.WorldService.GenerateChunks:input_type -> game.GenerateRequest
+	4,  // 42: game.WorldService.JoinGame:output_type -> game.JoinResponse
+	9,  // 43: game.WorldService.GameStream:output_type -> game.ServerMessage
+	16, // 44: game.WorldService.GetChunks:output_type -> game.Chunk
+	7,  // 45: game.WorldService.GenerateChunks:output_type -> game.GenerateResponse
+	42, // [42:46] is the sub-list for method output_type
+	38, // [38:42] is the sub-list for method input_type
+	38, // [38:38] is the sub-list for extension type_name
+	38, // [38:38] is the sub-list for extension extendee
+	0,  // [0:38] is the sub-list for field type_name
 }
 
 func init() { file_proto_game_game_proto_init() }
@@ -2307,7 +2445,7 @@ func file_proto_game_game_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_proto_game_game_proto_rawDesc), len(file_proto_game_game_proto_rawDesc)),
 			NumEnums:      3,
-			NumMessages:   30,
+			NumMessages:   33,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

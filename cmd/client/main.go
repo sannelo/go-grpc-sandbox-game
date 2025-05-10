@@ -13,19 +13,22 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/annelo/go-grpc-server/internal/block"
 	"github.com/annelo/go-grpc-server/internal/chunkmanager"
 	"github.com/annelo/go-grpc-server/internal/noisegeneration"
 	"github.com/annelo/go-grpc-server/pkg/protocol/game"
 	"github.com/nsf/termbox-go"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials/insecure"
+	"google.golang.org/grpc/status"
 )
 
 var (
 	serverAddr = flag.String("server", "localhost:50051", "Адрес сервера и порт")
 	playerName = flag.String("name", "Player1", "Имя игрока")
 	viewRadius = flag.Int("radius", 1, "Радиус отображения мира")
-	debugMode  = flag.Bool("debug", false, "Режим отладки (показать подробную информацию)")
+	debugMode  = flag.Bool("debug", true, "Режим отладки (показать подробную информацию)")
 )
 
 // ClientState содержит состояние клиента
@@ -85,6 +88,7 @@ var blockSymbols = map[int32]rune{
 	chunkmanager.BlockTypeSnow:      '*', // Снег
 	chunkmanager.BlockTypeTallGrass: '"', // Высокая трава
 	chunkmanager.BlockTypeFlower:    'f', // Цветок
+	block.BlockTypeFire:             'F', // Огонь
 }
 
 // Цвета для разных типов блоков
@@ -100,6 +104,7 @@ var blockColors = map[int32]termbox.Attribute{
 	chunkmanager.BlockTypeSnow:      termbox.ColorWhite,
 	chunkmanager.BlockTypeTallGrass: termbox.ColorGreen,
 	chunkmanager.BlockTypeFlower:    termbox.ColorMagenta,
+	block.BlockTypeFire:             termbox.ColorRed, // Огонь
 }
 
 // Фоновые цвета для блоков
@@ -115,6 +120,7 @@ var blockBackgroundColors = map[int32]termbox.Attribute{
 	chunkmanager.BlockTypeSnow:      termbox.ColorBlue,     // Синий фон для снега
 	chunkmanager.BlockTypeTallGrass: termbox.ColorBlack,    // Черный фон для высокой травы
 	chunkmanager.BlockTypeFlower:    termbox.ColorBlack,    // Черный фон для цветка
+	block.BlockTypeFire:             termbox.ColorBlack,    // Черный фон для огня
 }
 
 // getChunkKey возвращает строковый ключ для чанка
@@ -144,36 +150,38 @@ func getBlockLocal(x, y float32) (int32, int32) {
 
 // getBlock возвращает тип блока в указанной позиции
 func (cs *ClientState) getBlock(x, y float32) int32 {
+	// Получаем координаты чанка и локальные координаты блока
 	chunkX, chunkY := getChunkPos(x, y)
 	blockX, blockY := getBlockLocal(x, y)
 
-	cs.mu.RLock()
-	defer cs.mu.RUnlock()
-
+	// Формируем ключ чанка
 	chunkKey := getChunkKey(chunkX, chunkY)
+	// Пытаемся получить чанк под RLock
+	cs.mu.RLock()
 	chunk, exists := cs.chunks[chunkKey]
+	cs.mu.RUnlock()
+
 	if !exists {
-		// Если чанк еще не загружен, запрашиваем его
+		// Помечаем запрос и запускаем загрузку чанка под write lock
+		cs.mu.Lock()
 		if !cs.chunkRequests[chunkKey] {
-			// Отмечаем, что чанк запрошен, чтобы не запрашивать его многократно
 			cs.chunkRequests[chunkKey] = true
-
-			// Запускаем запрос чанка в отдельной горутине с задержкой
-			go func(x, y int32) {
-				// Добавляем случайную задержку для предотвращения перегрузки сервера
-				time.Sleep(time.Duration(rand.Intn(300)) * time.Millisecond)
-				cs.requestChunk(x, y)
-			}(chunkX, chunkY)
+			go cs.requestChunk(chunkX, chunkY)
 		}
-		return chunkmanager.BlockTypeAir // Возвращаем воздух для незагруженных чанков
+		cs.mu.Unlock()
+		return chunkmanager.BlockTypeAir
 	}
 
-	// Ищем блок с заданными координатами
-	for _, block := range chunk.Blocks {
-		if block.X == blockX && block.Y == blockY {
-			return block.Type
+	// Ищем блок внутри чанка под RLock
+	cs.mu.RLock()
+	for _, b := range chunk.Blocks {
+		if b.X == blockX && b.Y == blockY {
+			t := b.Type
+			cs.mu.RUnlock()
+			return t
 		}
 	}
+	cs.mu.RUnlock()
 
 	return chunkmanager.BlockTypeAir
 }
@@ -198,25 +206,15 @@ func (cs *ClientState) requestChunk(chunkX, chunkY int32) {
 		return
 	}
 
-	// Проверяем, был ли уже запрошен этот чанк
-	chunkKey := getChunkKey(chunkX, chunkY)
-	cs.mu.Lock()
-	isRequested := cs.chunkRequests[chunkKey]
-	cs.mu.Unlock()
-
-	// Если чанк уже был запрошен, не запрашиваем его повторно
-	if !isRequested {
-		return
-	}
-
 	// Создаем запрос на получение чанка
+	chunkKey := getChunkKey(chunkX, chunkY)
 	chunkRequest := &game.ChunkRequest{
 		PlayerPosition: &game.Position{
 			X: float32(chunkX * chunkmanager.ChunkSize),
 			Y: float32(chunkY * chunkmanager.ChunkSize),
 			Z: 0,
 		},
-		Radius:   1, // Установлен минимальный радиус для улучшения производительности
+		Radius:   int32(*viewRadius), // Используем флаг radius
 		PlayerId: cs.playerID,
 	}
 
@@ -240,12 +238,28 @@ func (cs *ClientState) requestChunk(chunkX, chunkY int32) {
 	chunksReceived := 0
 	for {
 		chunk, err := stream.Recv()
-		if err == io.EOF {
-			break
-		}
 		if err != nil {
+			// Завершаем чтение при EOF
+			if err == io.EOF {
+				break
+			}
+			// Обрабатываем DeadlineExceeded и Canceled: сбрасываем запрос и выходим
+			if st, ok := status.FromError(err); ok {
+				if st.Code() == codes.DeadlineExceeded || st.Code() == codes.Canceled {
+					cs.mu.Lock()
+					delete(cs.chunkRequests, chunkKey)
+					cs.mu.Unlock()
+					break
+				}
+				// Логируем другие коды
+				log.Printf("Ошибка при получении чанка: %v", err)
+				cs.mu.Lock()
+				delete(cs.chunkRequests, chunkKey)
+				cs.mu.Unlock()
+				return
+			}
+			// Прочие ошибки — сбрасываем и выходим
 			log.Printf("Ошибка при получении чанка: %v", err)
-			// Помечаем чанк как не запрошенный, чтобы попробовать позже
 			cs.mu.Lock()
 			delete(cs.chunkRequests, chunkKey)
 			cs.mu.Unlock()
@@ -364,6 +378,21 @@ func processInput(cs *ClientState) {
 				cs.movePlayer(1, 0)
 			case 'q':
 				return // Выход из игры
+			case 'f':
+				// Размещение блока огня
+				fireMsg := &game.ClientMessage{
+					PlayerId: cs.playerID,
+					Payload: &game.ClientMessage_BlockAction{
+						BlockAction: &game.BlockAction{
+							Action:    game.BlockAction_PLACE,
+							Position:  cs.position,
+							BlockType: block.BlockTypeFire,
+						},
+					},
+				}
+				if err := cs.stream.Send(fireMsg); err != nil {
+					log.Printf("Ошибка при отправке сообщения для размещения огня: %v", err)
+				}
 			}
 		case termbox.EventError:
 			log.Fatalf("Ошибка терминала: %v", ev.Err)
@@ -566,6 +595,17 @@ func processServerMessages(cs *ClientState, stream game.WorldService_GameStreamC
 				}
 			case game.WorldEvent_ENTITY_SPAWNED:
 				eventType = "появление сущности"
+			case game.WorldEvent_BLOCK_TICK:
+				// Устаревшее событие тика — игнорируем
+				continue
+			case game.WorldEvent_BLOCK_CHANGED:
+				eventType = "изменение блока"
+				// Обновляем блок в локальном хранилище чанков
+				if event.Position != nil {
+					handleBlockUpdate(cs, event)
+				}
+			case game.WorldEvent_BLOCK_INTERACTION:
+				eventType = "взаимодействие с блоком"
 			case game.WorldEvent_ENTITY_DESTROYED:
 				eventType = "уничтожение сущности"
 			case game.WorldEvent_WEATHER_CHANGED:
@@ -604,6 +644,7 @@ func processServerMessages(cs *ClientState, stream game.WorldService_GameStreamC
 			case game.WorldEvent_SERVER_SHUTDOWN:
 				eventType = "сервер завершает работу"
 				cs.addServerMessage("Сервер завершает работу: " + event.Message)
+				os.Exit(0)
 			}
 
 			if event.Position != nil {
@@ -807,6 +848,18 @@ func main() {
 	clientState.playerID = resp.PlayerId
 	clientState.position = resp.SpawnPosition
 	clientState.addServerMessage(fmt.Sprintf("Успешное подключение! ID: %s", resp.PlayerId))
+
+	// Предварительная загрузка чанков вокруг спавна
+	spawnChunkX, spawnChunkY := getChunkPos(clientState.position.X, clientState.position.Y)
+	for dy := -int32(*viewRadius); dy <= int32(*viewRadius); dy++ {
+		for dx := -int32(*viewRadius); dx <= int32(*viewRadius); dx++ {
+			key := getChunkKey(spawnChunkX+dx, spawnChunkY+dy)
+			clientState.mu.Lock()
+			clientState.chunkRequests[key] = true
+			clientState.mu.Unlock()
+			go clientState.requestChunk(spawnChunkX+dx, spawnChunkY+dy)
+		}
+	}
 
 	// Устанавливаем двунаправленный поток для обмена сообщениями
 	stream, err := client.GameStream(ctx)
