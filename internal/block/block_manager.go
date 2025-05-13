@@ -457,6 +457,12 @@ func (bm *BlockManager) processDynamicBlocks() {
 						nb = b
 						break
 					}
+
+					// Если соседний блок - огненный, пропускаем
+					if nb.GetType() == BlockTypeFire {
+						return // Заглушка, чтобы огонь не распространялся на огненные блоки
+					}
+
 					x2, y2, chunkPos2 := nb.GetPosition()
 					// Создаем новый огненный блок и отправляем событие о размещении
 					newFire, err := bm.CreateBlock(x2, y2, chunkPos2, BlockTypeFire)
@@ -501,6 +507,12 @@ func (bm *BlockManager) LoadBlocksFromChunk(chunk *game.Chunk) error {
 
 		// Сбрасываем флаг изменений, так как блок только загружен
 		block.ResetChanges()
+
+		// Если блок динамический, отмечаем чанк как активный
+		if dyn, ok := block.(DynamicBlock); ok {
+			_ = dyn // use dynamic block, state already loaded
+			bm.chunkManager.MarkChunkAsActive(chunk.Position)
+		}
 	}
 
 	return nil

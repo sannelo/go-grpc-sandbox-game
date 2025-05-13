@@ -37,6 +37,11 @@ func (t *TestChunkManagerAdapter) IsChunkActive(pos *game.ChunkPosition) bool {
 	return t.ChunkManager.IsChunkActive(pos)
 }
 
+// SetBlock sets a block in the chunk via underlying ChunkManager
+func (t *TestChunkManagerAdapter) SetBlock(pos *game.ChunkPosition, block *game.Block) error {
+	return t.ChunkManager.SetBlock(pos, block)
+}
+
 // Конфигурация хранилища
 type TestStorageConfig struct {
 	WorldPath string

@@ -191,12 +191,15 @@ func (cs *ClientState) addServerMessage(message string) {
 	cs.mu.Lock()
 	defer cs.mu.Unlock()
 
+	// Добавляем к сообщению время
+	message = fmt.Sprintf("%s %s", time.Now().Format("15:04:05"), message)
+
 	// Добавляем новое сообщение в начало списка
 	cs.serverMessages = append([]string{message}, cs.serverMessages...)
 
 	// Ограничиваем количество сообщений
-	if len(cs.serverMessages) > 5 {
-		cs.serverMessages = cs.serverMessages[:5]
+	if len(cs.serverMessages) > 4 {
+		cs.serverMessages = cs.serverMessages[:4]
 	}
 }
 
@@ -569,11 +572,13 @@ func processServerMessages(cs *ClientState, stream game.WorldService_GameStreamC
 			cs.addServerMessage(fmt.Sprintf("Ошибка: %v", err))
 			return
 		}
+		
 
 		// Обработка полученного сообщения
 		switch payload := msg.Payload.(type) {
 		case *game.ServerMessage_WorldEvent:
 			event := payload.WorldEvent
+			cs.addServerMessage(fmt.Sprintf("DEBUG: пришло событие %v", event.Type))
 			if event == nil {
 				cs.addServerMessage("Получено пустое событие мира")
 				continue
@@ -595,9 +600,6 @@ func processServerMessages(cs *ClientState, stream game.WorldService_GameStreamC
 				}
 			case game.WorldEvent_ENTITY_SPAWNED:
 				eventType = "появление сущности"
-			case game.WorldEvent_BLOCK_TICK:
-				// Устаревшее событие тика — игнорируем
-				continue
 			case game.WorldEvent_BLOCK_CHANGED:
 				eventType = "изменение блока"
 				// Обновляем блок в локальном хранилище чанков

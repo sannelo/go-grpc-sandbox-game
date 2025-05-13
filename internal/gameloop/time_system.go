@@ -2,6 +2,7 @@ package gameloop
 
 import (
 	"context"
+	"log"
 	"time"
 
 	"github.com/annelo/go-grpc-server/pkg/protocol/game"
@@ -37,6 +38,7 @@ func (t *TimeSystem) Tick(ctx context.Context, dt time.Duration) {
 
 	// Периодически оповещаем клиентов
 	if t.ticks%broadcastEvery == 0 {
+		log.Printf("[TimeSystem.Tick] broadcasting TIME_CHANGED at tick=%d (dayTime=%d, day=%d)", t.ticks, t.ticks%ticksPerDay, t.day)
 		if t.deps.EmitWorldEvent != nil {
 			ti := &game.TimeInfo{
 				DayTime: t.ticks % ticksPerDay,
